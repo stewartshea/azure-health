@@ -3,6 +3,13 @@
 # Set DEBUG=1 to see detailed role assignment information
 DEBUG=${DEBUG:-0}
 
+# Ensure Azure Resource Graph extension is installed
+echo "🔧 Checking Azure CLI resource-graph extension..."
+if ! az extension list --query "[?name=='resource-graph']" -o tsv | grep -q "resource-graph"; then
+  echo "📦 Installing Azure CLI resource-graph extension..."
+  az extension add --name resource-graph --yes >/dev/null 2>&1
+fi
+
 # Function to get quota limit dynamically for a subscription
 get_quota_limit() {
   local subscription_id=$1
@@ -42,37 +49,29 @@ for SUBSCRIPTION_ID in $SUBSCRIPTION_LIST; do
   # Get dynamic quota limit for this subscription
   QUOTA_LIMIT=$(get_quota_limit "$SUBSCRIPTION_ID")
   
-  # Get all role assignments at subscription scope
-  # The API already returns only subscription-level assignments by default
-  ALL_ASSIGNMENTS=$(az rest --method get \
-    --url "https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01" \
-    --query "value" -o json 2>&1)
+  # Get role assignment count using Azure Resource Graph (same as user's working query)
+  RESOURCE_GRAPH_QUERY="authorizationresources | where type =~ 'microsoft.authorization/roleassignments' | where subscriptionId == '${SUBSCRIPTION_ID}' | summarize count()"
+  
+  # Execute query and capture both stdout and stderr, then filter out warnings
+  GRAPH_OUTPUT=$(az graph query -q "$RESOURCE_GRAPH_QUERY" --query "data[0].count_" -o tsv 2>&1)
+  
+  # Extract just the numeric count, filtering out warnings and prompts
+  COUNT=$(echo "$GRAPH_OUTPUT" | grep -E '^[0-9]+$' | head -1)
 
-  if [[ $? -ne 0 || "$ALL_ASSIGNMENTS" == *"AADSTS"* ]]; then
-    echo "  ❌ Skipping due to authentication or access error."
-    echo "  Message: $ALL_ASSIGNMENTS"
+  if [[ -z "$COUNT" || ! "$COUNT" =~ ^[0-9]+$ ]]; then
+    echo "  ❌ Skipping due to authentication, access error, or Azure Resource Graph unavailable."
+    echo "  Message: $GRAPH_OUTPUT"
     echo ""
     continue
   fi
 
-  # Count the role assignments
-  COUNT=$(echo "$ALL_ASSIGNMENTS" | jq '. | length' 2>/dev/null)
-  
-  # Fallback if jq is not available
-  if [[ -z "$COUNT" || "$COUNT" == "null" ]]; then
-    COUNT=$(echo "$ALL_ASSIGNMENTS" | grep -o '"principalId"' | wc -l)
-  fi
-
   # Debug output to help understand what's being counted
   if [[ "$DEBUG" == "1" ]]; then
-    echo "  🔍 DEBUG: API endpoint used: /subscriptions/${SUBSCRIPTION_ID}/providers/Microsoft.Authorization/roleAssignments"
-    echo "  🔍 DEBUG: API version: 2022-04-01"
-    echo "  🔍 DEBUG: Scope: Subscription-level assignments (API default behavior)"
-    if command -v jq >/dev/null 2>&1; then
-      echo "  🔍 DEBUG: Sample assignments (first 3):"
-      echo "$ALL_ASSIGNMENTS" | jq -r '.[:3] | .[] | "    - " + .properties.principalDisplayName + " (" + .properties.roleDefinitionName + ") [Scope: " + .properties.scope + "]"' 2>/dev/null || echo "    (Unable to parse assignment details)"
-      echo "  🔍 DEBUG: Total assignments counted: $COUNT"
-    fi
+    echo "  🔍 DEBUG: Using Azure Resource Graph query"
+    echo "  🔍 DEBUG: Query: $RESOURCE_GRAPH_QUERY"
+    echo "  🔍 DEBUG: Raw output: $GRAPH_OUTPUT"
+    echo "  🔍 DEBUG: Extracted count: $COUNT"
+    echo "  🔍 DEBUG: This matches the KQL query that gives accurate results"
   fi
 
   echo "  Role assignments used: $COUNT"
