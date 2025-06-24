@@ -42,10 +42,10 @@ for SUBSCRIPTION_ID in $SUBSCRIPTION_LIST; do
   # Get dynamic quota limit for this subscription
   QUOTA_LIMIT=$(get_quota_limit "$SUBSCRIPTION_ID")
   
-  # Get all direct role assignments (exclude inherited ones)
-  # Using $filter to ensure we only get assignments directly made at this subscription scope
+  # Get all role assignments at subscription scope
+  # The API already returns only subscription-level assignments by default
   ALL_ASSIGNMENTS=$(az rest --method get \
-    --url "https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01&\$filter=atScope()" \
+    --url "https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01" \
     --query "value" -o json 2>&1)
 
   if [[ $? -ne 0 || "$ALL_ASSIGNMENTS" == *"AADSTS"* ]]; then
@@ -55,38 +55,23 @@ for SUBSCRIPTION_ID in $SUBSCRIPTION_LIST; do
     continue
   fi
 
-  # Additional filtering to ensure only direct assignments
-  # Filter out any assignments with scope different from current subscription
-  DIRECT_ASSIGNMENTS=$(echo "$ALL_ASSIGNMENTS" | jq --arg sub_scope "/subscriptions/$SUBSCRIPTION_ID" '[.[] | select(.properties.scope == $sub_scope)]' 2>/dev/null)
-  
-  if [[ -z "$DIRECT_ASSIGNMENTS" || "$DIRECT_ASSIGNMENTS" == "null" ]]; then
-    # Fallback if jq fails - use the original response
-    DIRECT_ASSIGNMENTS="$ALL_ASSIGNMENTS"
-  fi
-
-  # Count the direct role assignments only
-  COUNT=$(echo "$DIRECT_ASSIGNMENTS" | jq '. | length' 2>/dev/null)
+  # Count the role assignments
+  COUNT=$(echo "$ALL_ASSIGNMENTS" | jq '. | length' 2>/dev/null)
   
   # Fallback if jq is not available
   if [[ -z "$COUNT" || "$COUNT" == "null" ]]; then
-    COUNT=$(echo "$DIRECT_ASSIGNMENTS" | grep -o '"principalId"' | wc -l)
+    COUNT=$(echo "$ALL_ASSIGNMENTS" | grep -o '"principalId"' | wc -l)
   fi
 
   # Debug output to help understand what's being counted
   if [[ "$DEBUG" == "1" ]]; then
     echo "  🔍 DEBUG: API endpoint used: /subscriptions/${SUBSCRIPTION_ID}/providers/Microsoft.Authorization/roleAssignments"
     echo "  🔍 DEBUG: API version: 2022-04-01"
-    echo "  🔍 DEBUG: Filter applied: atScope() + scope filtering"
-    echo "  🔍 DEBUG: Scope: DIRECT subscription-level assignments ONLY"
+    echo "  🔍 DEBUG: Scope: Subscription-level assignments (API default behavior)"
     if command -v jq >/dev/null 2>&1; then
       echo "  🔍 DEBUG: Sample assignments (first 3):"
-      echo "$DIRECT_ASSIGNMENTS" | jq -r '.[:3] | .[] | "    - " + .properties.principalDisplayName + " (" + .properties.roleDefinitionName + ") [Scope: " + .properties.scope + "]"' 2>/dev/null || echo "    (Unable to parse assignment details)"
-      
-      # Show total vs direct count if different
-      TOTAL_COUNT=$(echo "$ALL_ASSIGNMENTS" | jq '. | length' 2>/dev/null)
-      if [[ "$TOTAL_COUNT" != "$COUNT" ]]; then
-        echo "  🔍 DEBUG: Total assignments found: $TOTAL_COUNT, Direct assignments: $COUNT"
-      fi
+      echo "$ALL_ASSIGNMENTS" | jq -r '.[:3] | .[] | "    - " + .properties.principalDisplayName + " (" + .properties.roleDefinitionName + ") [Scope: " + .properties.scope + "]"' 2>/dev/null || echo "    (Unable to parse assignment details)"
+      echo "  🔍 DEBUG: Total assignments counted: $COUNT"
     fi
   fi
 
