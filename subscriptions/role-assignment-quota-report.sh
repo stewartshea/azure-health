@@ -19,7 +19,9 @@ get_quota_limit() {
 
 # Use provided SUBSCRIPTIONS env var, or fall back to all subscriptions
 if [[ -n "$SUBSCRIPTIONS" ]]; then
-  SUBSCRIPTION_LIST=$SUBSCRIPTIONS
+  # Support both space-separated and CSV formats
+  # Convert CSV to space-separated if needed
+  SUBSCRIPTION_LIST=$(echo "$SUBSCRIPTIONS" | tr ',' ' ')
 else
   SUBSCRIPTION_LIST=$(az account list --query "[].id" -o tsv)
 fi

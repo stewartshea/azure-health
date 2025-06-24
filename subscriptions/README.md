@@ -16,3 +16,28 @@ The script automatically retrieves the actual quota limit for each subscription 
 
 ```bash
 ./role-assignment-quota-report.sh
+```
+
+### Check Specific Subscriptions
+
+You can specify subscriptions using the `SUBSCRIPTIONS` environment variable in either format:
+
+**Space-separated format:**
+```bash
+export SUBSCRIPTIONS="sub1-guid sub2-guid sub3-guid"
+./role-assignment-quota-report.sh
+```
+
+**CSV format:**
+```bash
+export SUBSCRIPTIONS="sub1-guid,sub2-guid,sub3-guid"
+./role-assignment-quota-report.sh
+```
+
+**One-liner examples:**
+```bash
+# Space-separated
+SUBSCRIPTIONS="12345678-1234-1234-1234-123456789012 87654321-4321-4321-4321-210987654321" ./role-assignment-quota-report.sh
+
+# CSV format
+SUBSCRIPTIONS="12345678-1234-1234-1234-123456789012,87654321-4321-4321-4321-210987654321" ./role-assignment-quota-report.sh
