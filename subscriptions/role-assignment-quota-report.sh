@@ -77,7 +77,10 @@ for SUBSCRIPTION_ID in $SUBSCRIPTION_LIST; do
   echo "  Role assignments used: $COUNT"
   echo "  Current quota limit:   $QUOTA_LIMIT"
 
-  if (( COUNT >= QUOTA_LIMIT )); then
+  # Determine status based on count and quota
+  if [[ "$COUNT" == "0" ]]; then
+    echo "  ⚠️  No role assignments found - this may indicate an access issue or unusual configuration."
+  elif (( COUNT >= QUOTA_LIMIT )); then
     echo "  ⚠️  Quota limit reached or exceeded!"
   elif (( COUNT >= QUOTA_LIMIT * 90 / 100 )); then
     echo "  ⚠️  Usage is above 90% of the quota!"
