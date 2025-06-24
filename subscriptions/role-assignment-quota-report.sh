@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Set DEBUG=1 to see detailed role assignment information
+DEBUG=${DEBUG:-0}
+
 # Function to get quota limit dynamically for a subscription
 get_quota_limit() {
   local subscription_id=$1
@@ -27,23 +30,49 @@ else
 fi
 
 for SUBSCRIPTION_ID in $SUBSCRIPTION_LIST; do
-  echo "Checking subscription: $SUBSCRIPTION_ID"
+  # Get subscription name for better readability
+  SUBSCRIPTION_NAME=$(az account show --subscription "$SUBSCRIPTION_ID" --query "name" -o tsv 2>/dev/null)
+  
+  if [[ -z "$SUBSCRIPTION_NAME" ]]; then
+    echo "Checking subscription: $SUBSCRIPTION_ID"
+  else
+    echo "Checking subscription: $SUBSCRIPTION_NAME ($SUBSCRIPTION_ID)"
+  fi
 
   # Get dynamic quota limit for this subscription
   QUOTA_LIMIT=$(get_quota_limit "$SUBSCRIPTION_ID")
   
-  RESPONSE=$(az rest --method get \
+  # Get all role assignments with pagination support
+  ALL_ASSIGNMENTS=$(az rest --method get \
     --url "https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01" \
-    --query "length(value)" -o tsv 2>&1)
+    --query "value" -o json 2>&1)
 
-  if [[ $? -ne 0 || "$RESPONSE" == *"AADSTS"* ]]; then
+  if [[ $? -ne 0 || "$ALL_ASSIGNMENTS" == *"AADSTS"* ]]; then
     echo "  ❌ Skipping due to authentication or access error."
-    echo "  Message: $RESPONSE"
+    echo "  Message: $ALL_ASSIGNMENTS"
     echo ""
     continue
   fi
 
-  COUNT=$RESPONSE
+  # Count the role assignments
+  COUNT=$(echo "$ALL_ASSIGNMENTS" | jq '. | length' 2>/dev/null)
+  
+  # Fallback if jq is not available
+  if [[ -z "$COUNT" || "$COUNT" == "null" ]]; then
+    COUNT=$(echo "$ALL_ASSIGNMENTS" | grep -o '"principalId"' | wc -l)
+  fi
+
+  # Debug output to help understand what's being counted
+  if [[ "$DEBUG" == "1" ]]; then
+    echo "  🔍 DEBUG: API endpoint used: /subscriptions/${SUBSCRIPTION_ID}/providers/Microsoft.Authorization/roleAssignments"
+    echo "  🔍 DEBUG: API version: 2022-04-01"
+    echo "  🔍 DEBUG: Scope: Subscription-level assignments only"
+    if command -v jq >/dev/null 2>&1; then
+      echo "  🔍 DEBUG: Sample assignments (first 3):"
+      echo "$ALL_ASSIGNMENTS" | jq -r '.[:3] | .[] | "    - " + .properties.principalDisplayName + " (" + .properties.roleDefinitionName + ")"' 2>/dev/null || echo "    (Unable to parse assignment details)"
+    fi
+  fi
+
   echo "  Role assignments used: $COUNT"
   echo "  Current quota limit:   $QUOTA_LIMIT"
 
