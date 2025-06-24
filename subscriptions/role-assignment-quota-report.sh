@@ -58,8 +58,9 @@ for SUBSCRIPTION_ID in $SUBSCRIPTION_LIST; do
   # Extract just the numeric count, filtering out warnings and prompts
   COUNT=$(echo "$GRAPH_OUTPUT" | grep -E '^[0-9]+$' | head -1)
 
-  if [[ -z "$COUNT" || ! "$COUNT" =~ ^[0-9]+$ ]]; then
-    echo "  ❌ Skipping due to authentication, access error, or Azure Resource Graph unavailable."
+  # Check for errors in the output
+  if [[ -z "$COUNT" || ! "$COUNT" =~ ^[0-9]+$ ]] || echo "$GRAPH_OUTPUT" | grep -qi "error\|failed\|denied\|unauthorized\|forbidden"; then
+    echo "  ❌ Error retrieving role assignment count."
     echo "  Message: $GRAPH_OUTPUT"
     echo ""
     continue
@@ -76,6 +77,13 @@ for SUBSCRIPTION_ID in $SUBSCRIPTION_LIST; do
 
   echo "  Role assignments used: $COUNT"
   echo "  Current quota limit:   $QUOTA_LIMIT"
+
+  # Final safety check for any error conditions before status evaluation
+  if echo "$GRAPH_OUTPUT" | grep -qi "error\|failed\|denied\|unauthorized\|forbidden\|exception"; then
+    echo "  ❌ Warning: Errors detected in data retrieval - count may be unreliable."
+    echo ""
+    continue
+  fi
 
   # Determine status based on count and quota
   if [[ "$COUNT" == "0" ]]; then
