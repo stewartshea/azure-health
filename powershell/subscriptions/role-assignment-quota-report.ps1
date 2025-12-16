@@ -157,30 +157,21 @@ function Install-RequiredModule {
     Write-Host "   ⚠️  Module $ModuleName not found. Installing..." -ForegroundColor Yellow
     
     try {
-        # Determine installation scope
-        if ($PSVersionTable.Platform -eq 'Win32NT' -or $null -eq $PSVersionTable.Platform) {
-            $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-            $scope = if ($isAdmin) { "AllUsers" } else { "CurrentUser" }
-        } else {
-            # For Linux/Mac, default to CurrentUser scope
-            $scope = "CurrentUser"
-        }
+        Write-Host "   Installing to temp directory: $tempModulePath" -ForegroundColor Gray
         
-        Write-Host "   Installing to scope: $scope" -ForegroundColor Gray
-        
-        $installParams = @{
+        # Use Save-Module to temp path, then it will be available via PSModulePath
+        $saveParams = @{
             Name = $ModuleName
-            Scope = $scope
+            Path = $tempModulePath
             Force = $true
-            AllowClobber = $true
-            SkipPublisherCheck = $true
+            Repository = "PSGallery"
         }
         
         if ($MinimumVersion) {
-            $installParams.MinimumVersion = $MinimumVersion
+            $saveParams.MinimumVersion = $MinimumVersion
         }
         
-        Install-Module @installParams -ErrorAction Stop
+        Save-Module @saveParams -ErrorAction Stop
         Import-Module $ModuleName -ErrorAction Stop
         Write-Host "   ✅ Successfully installed $ModuleName" -ForegroundColor Green
     }
@@ -189,10 +180,9 @@ function Install-RequiredModule {
         Write-Host "   Error: $_" -ForegroundColor Red
         Write-Host ""
         Write-Host "   Troubleshooting steps:" -ForegroundColor Yellow
-        Write-Host "   1. Try manually: Install-Module $ModuleName -Scope CurrentUser -Force" -ForegroundColor Yellow
-        Write-Host "   2. Check internet connectivity" -ForegroundColor Yellow
-        Write-Host "   3. Verify PSGallery access: Find-Module $ModuleName" -ForegroundColor Yellow
-        Write-Host "   4. Check PowerShell version: `$PSVersionTable" -ForegroundColor Yellow
+        Write-Host "   1. Check internet connectivity" -ForegroundColor Yellow
+        Write-Host "   2. Verify PSGallery access: Find-Module $ModuleName" -ForegroundColor Yellow
+        Write-Host "   3. Check temp directory: $tempModulePath" -ForegroundColor Yellow
         throw
     }
 }
