@@ -283,17 +283,15 @@ function Install-RequiredModule {
             
             Write-Host "   Module extracted to: $moduleDestPath" -ForegroundColor Gray
             
-            # Find the module manifest (.psd1 file) in the extracted directory
-            # NuGet packages extract with a versioned subdirectory
+            # Verify module was extracted correctly
             $manifestPath = Get-ChildItem -Path $moduleDestPath -Filter "*.psd1" -Recurse | Select-Object -First 1
             if (-not $manifestPath) {
                 throw "Module manifest (.psd1) not found in extracted package"
             }
             
-            # Import using explicit path to avoid module name resolution issues
-            $manifestDir = $manifestPath.DirectoryName
-            Import-Module -Name $manifestDir -ErrorAction Stop
-            Write-Host "   ✅ Successfully installed and imported $ModuleName" -ForegroundColor Green
+            # Module is now in PSModulePath, so it will be discoverable
+            # Don't import here - let the later import step handle it to avoid path resolution issues
+            Write-Host "   ✅ Successfully installed $ModuleName" -ForegroundColor Green
         }
         finally {
             # Clean up temp ZIP
@@ -353,8 +351,25 @@ if ($installSuccess) {
 Write-Host "📦 Importing required modules..." -ForegroundColor Cyan
 foreach ($module in $requiredModules) {
     try {
-        Import-Module $module.Name -Force -ErrorAction Stop
-        Write-Host "   ✅ Imported $($module.Name)" -ForegroundColor Green
+        # Try to find module in our temp path first
+        $modulePath = Join-Path $tempModulePath $module.Name
+        if (Test-Path $modulePath) {
+            # Find manifest in the module directory
+            $manifest = Get-ChildItem -Path $modulePath -Filter "*.psd1" -Recurse | Select-Object -First 1
+            if ($manifest) {
+                # Import using the manifest's directory path
+                Import-Module -Name $manifest.DirectoryName -Force -ErrorAction Stop
+                Write-Host "   ✅ Imported $($module.Name) from temp path" -ForegroundColor Green
+            }
+            else {
+                throw "Manifest not found in $modulePath"
+            }
+        }
+        else {
+            # Module not in temp path, try normal import
+            Import-Module $module.Name -Force -ErrorAction Stop
+            Write-Host "   ✅ Imported $($module.Name)" -ForegroundColor Green
+        }
     }
     catch {
         Write-Host "   ❌ Failed to import $($module.Name): $_" -ForegroundColor Red
