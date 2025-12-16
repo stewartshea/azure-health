@@ -150,7 +150,12 @@ function Install-RequiredModule {
     
     if (Test-ModuleInstalled -ModuleName $ModuleName) {
         Write-Host "   ✅ Module $ModuleName is already installed" -ForegroundColor Green
-        Import-Module $ModuleName -ErrorAction SilentlyContinue
+        try {
+            Import-Module $ModuleName -Force -ErrorAction Stop
+        }
+        catch {
+            Write-Host "   ⚠️  Warning: Could not import $ModuleName, will retry later: $_" -ForegroundColor Yellow
+        }
         return
     }
     
@@ -220,6 +225,20 @@ if ($installSuccess) {
     Write-Host "✅ All required modules are installed and ready" -ForegroundColor Green
     Write-Host ""
 }
+
+# Explicitly import all required modules
+Write-Host "📦 Importing required modules..." -ForegroundColor Cyan
+foreach ($module in $requiredModules) {
+    try {
+        Import-Module $module.Name -Force -ErrorAction Stop
+        Write-Host "   ✅ Imported $($module.Name)" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "   ❌ Failed to import $($module.Name): $_" -ForegroundColor Red
+        exit 1
+    }
+}
+Write-Host ""
 
 #endregion
 
