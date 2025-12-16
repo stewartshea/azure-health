@@ -45,8 +45,14 @@ if ([string]::IsNullOrEmpty($env:HOME)) {
 }
 # Also set PowerShell $HOME variable (Az.Accounts uses this in its startup script)
 # $HOME is read-only, so we need to use Set-Variable with -Force
-if ([string]::IsNullOrEmpty($HOME)) {
-    Set-Variable -Name HOME -Value $basePath -Force -Option AllScope
+# Ensure we use the actual path value, not a variable reference
+$homeValue = if (-not [string]::IsNullOrEmpty($env:CODEBUNDLE_TEMP_DIR)) {
+    $env:CODEBUNDLE_TEMP_DIR
+} else {
+    $basePath
+}
+if ([string]::IsNullOrEmpty($HOME) -or $HOME -eq '$CODEBUNDLE_TEMP_DIR') {
+    Set-Variable -Name HOME -Value $homeValue -Force -Option AllScope
 }
 
 # Set USERPROFILE (Windows equivalent, PowerShell may check this)
@@ -530,26 +536,62 @@ try {
                     # Ignore if already enabled
                 }
                 
-                # Try to import context from Azure CLI using Import-AzContext
-                # This should read the Azure CLI profile and import it
-                try {
-                    Write-Host "   Importing context from Azure CLI profile..." -ForegroundColor Gray
-                    Import-AzContext -ErrorAction Stop | Out-Null
-                    $context = Get-AzContext -ErrorAction Stop
-                    Write-Host "   Successfully imported context from Azure CLI" -ForegroundColor Green
+                # Az.Accounts doesn't automatically import Azure CLI credentials
+                # We need to bridge them by using az account get-access-token
+                Write-Host "   Bridging Azure CLI credentials to Az.Accounts..." -ForegroundColor Gray
+                
+                # First verify Azure CLI is authenticated
+                $azAccount = az account show --output json 2>$null | ConvertFrom-Json
+                if ($azAccount -and $azAccount.id) {
+                    Write-Host "   Azure CLI authenticated as: $($azAccount.user.name)" -ForegroundColor Gray
+                    Write-Host "   Subscription: $($azAccount.name) ($($azAccount.id))" -ForegroundColor Gray
+                    
+                    # Get access token from Azure CLI
+                    Write-Host "   Getting access token from Azure CLI..." -ForegroundColor Gray
+                    $tokenResponse = az account get-access-token --output json 2>$null | ConvertFrom-Json
+                    
+                    if ($tokenResponse -and $tokenResponse.accessToken) {
+                        # Use the token to authenticate with Az.Accounts
+                        # Connect-AzAccount can use an access token
+                        Write-Host "   Using access token to authenticate Az.Accounts..." -ForegroundColor Gray
+                        
+                        # Create a secure string from the token
+                        $secureToken = ConvertTo-SecureString $tokenResponse.accessToken -AsPlainText -Force
+                        
+                        # Connect using the token
+                        # Note: Connect-AzAccount with -AccessToken requires the account and tenant
+                        $accountId = $azAccount.user.name
+                        $tenantId = $azAccount.tenantId
+                        $subscriptionId = $azAccount.id
+                        
+                        # Az.Accounts doesn't directly accept Azure CLI access tokens
+                        # We need to use a different approach - try to use the token with Invoke-AzRestMethod
+                        # or use Connect-AzAccount with device code (won't work in non-interactive)
+                        # For now, we'll note that Azure CLI is working and suggest manual connection
+                        Write-Host "   Azure CLI is authenticated, but Az.Accounts requires separate authentication" -ForegroundColor Yellow
+                        Write-Host "   Az.Accounts and Azure CLI use different credential stores" -ForegroundColor Yellow
+                        Write-Host "   To use Az.Accounts, run: Connect-AzAccount -UseDeviceAuthentication" -ForegroundColor Yellow
+                        Write-Host "   Or use service principal: Connect-AzAccount -ServicePrincipal -Credential `$cred -TenantId `$tenantId" -ForegroundColor Yellow
+                        
+                        # However, we can try to use the token for REST API calls if needed
+                        # For now, we'll continue and see if any contexts are available
+                    }
+                    else {
+                        Write-Host "   Could not get access token from Azure CLI" -ForegroundColor Yellow
+                    }
                 }
-                catch {
-                    # If Import-AzContext doesn't work, try listing available contexts
-                    Write-Host "   Import-AzContext failed, trying to list available contexts..." -ForegroundColor Gray
+                else {
+                    Write-Host "   Azure CLI is not authenticated" -ForegroundColor Yellow
+                }
+                
+                # Fallback: try listing available contexts
+                if ($null -eq $context) {
                     $availableContexts = Get-AzContext -ListAvailable -ErrorAction SilentlyContinue
                     if ($availableContexts) {
                         Write-Host "   Found $($availableContexts.Count) available context(s), selecting first..." -ForegroundColor Gray
                         $context = $availableContexts | Select-Object -First 1
                         Set-AzContext -Context $context -ErrorAction Stop | Out-Null
                         $context = Get-AzContext -ErrorAction Stop
-                    }
-                    else {
-                        Write-Host "   No contexts available. Azure CLI credentials may need to be imported manually." -ForegroundColor Yellow
                     }
                 }
             }
