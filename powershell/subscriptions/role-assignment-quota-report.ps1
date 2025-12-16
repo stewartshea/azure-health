@@ -497,8 +497,46 @@ Write-Host ""
 
 Write-Host "🔐 Checking Azure authentication status..." -ForegroundColor Cyan
 
+# Check if AZURE_CONFIG_DIR is set (from az login)
+if (-not [string]::IsNullOrEmpty($env:AZURE_CONFIG_DIR)) {
+    Write-Host "   Using Azure config directory: $env:AZURE_CONFIG_DIR" -ForegroundColor Gray
+    # Az.Accounts should automatically use AZURE_CONFIG_DIR if set
+    # But we can also explicitly set it for the module
+    $env:AZURE_CONFIG_DIR = $env:AZURE_CONFIG_DIR
+}
+
 try {
+    # Try to import context from Azure CLI if available
+    # Az.Accounts can use credentials from az login if AZURE_CONFIG_DIR is set
     $context = Get-AzContext -ErrorAction SilentlyContinue
+    
+    # If no context but AZURE_CONFIG_DIR exists, try to import from Azure CLI
+    if ($null -eq $context -and -not [string]::IsNullOrEmpty($env:AZURE_CONFIG_DIR)) {
+        Write-Host "   Attempting to import context from Azure CLI..." -ForegroundColor Gray
+        try {
+            # Az.Accounts should automatically pick up credentials from AZURE_CONFIG_DIR
+            # But we may need to explicitly import the context
+            $context = Get-AzContext -ErrorAction Stop
+        }
+        catch {
+            # If that doesn't work, try to import using Import-AzContext
+            try {
+                $azConfigPath = Join-Path $env:AZURE_CONFIG_DIR "azureProfile.json"
+                if (Test-Path $azConfigPath) {
+                    Write-Host "   Found Azure CLI profile, importing context..." -ForegroundColor Gray
+                    # Az.Accounts should automatically use the profile, but let's try to refresh
+                    $context = Get-AzContext -ListAvailable -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($context) {
+                        Set-AzContext -Context $context -ErrorAction SilentlyContinue | Out-Null
+                        $context = Get-AzContext -ErrorAction Stop
+                    }
+                }
+            }
+            catch {
+                Write-Host "   Could not import from Azure CLI profile" -ForegroundColor Yellow
+            }
+        }
+    }
     
     # Validate context is actually authenticated (has Account and Tenant)
     $isValidContext = $null -ne $context -and 
@@ -517,6 +555,9 @@ try {
             Write-Host "   - Connect-AzAccount -ServicePrincipal -Credential `$cred -TenantId `$tenantId" -ForegroundColor Yellow
             Write-Host "   - Connect-AzAccount -Identity (for managed identity)" -ForegroundColor Yellow
             Write-Host "   - Set environment variables: AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID" -ForegroundColor Yellow
+            if (-not [string]::IsNullOrEmpty($env:AZURE_CONFIG_DIR)) {
+                Write-Host "   - Or ensure 'az login' credentials are valid in: $env:AZURE_CONFIG_DIR" -ForegroundColor Yellow
+            }
         }
         else {
             Write-Host "   Attempting interactive authentication..." -ForegroundColor Yellow
@@ -550,6 +591,9 @@ catch {
     Write-Host "  Connect-AzAccount -UseDeviceAuthentication" -ForegroundColor Yellow
     Write-Host "  Connect-AzAccount -ServicePrincipal -Credential `$cred -TenantId `$tenantId" -ForegroundColor Yellow
     Write-Host "  Connect-AzAccount -Identity" -ForegroundColor Yellow
+    if (-not [string]::IsNullOrEmpty($env:AZURE_CONFIG_DIR)) {
+        Write-Host "  Or ensure 'az login' credentials are valid in: $env:AZURE_CONFIG_DIR" -ForegroundColor Yellow
+    }
     exit 1
 }
 
