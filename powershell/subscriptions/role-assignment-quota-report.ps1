@@ -1,4 +1,4 @@
-#!/usr/local/bin pwsh
+#!/usr/local/bin/pwsh
 
 <#
 .SYNOPSIS
