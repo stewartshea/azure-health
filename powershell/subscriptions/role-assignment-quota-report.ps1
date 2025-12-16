@@ -78,6 +78,17 @@ if ([string]::IsNullOrEmpty($env:USER) -and [string]::IsNullOrEmpty($env:USERNAM
     $env:USERNAME = "pwsh-user"
 }
 
+# Set PATH if not set (required for many operations)
+if ([string]::IsNullOrEmpty($env:PATH)) {
+    $env:PATH = "/usr/local/bin:/usr/bin:/bin"
+}
+else {
+    # Ensure temp path is in PATH
+    if ($env:PATH -notlike "*$basePath*") {
+        $env:PATH = "$basePath:$env:PATH"
+    }
+}
+
 #region Module Management
 
 function Test-ModuleInstalled {
@@ -271,6 +282,18 @@ function Install-RequiredModule {
             [System.IO.Compression.ZipFile]::ExtractToDirectory($tempZip, $moduleDestPath)
             
             Write-Host "   Module extracted to: $moduleDestPath" -ForegroundColor Gray
+            
+            # Find the module manifest (.psd1 file) in the extracted directory
+            # NuGet packages extract with a versioned subdirectory
+            $manifestPath = Get-ChildItem -Path $moduleDestPath -Filter "*.psd1" -Recurse | Select-Object -First 1
+            if (-not $manifestPath) {
+                throw "Module manifest (.psd1) not found in extracted package"
+            }
+            
+            # Import using explicit path to avoid module name resolution issues
+            $manifestDir = $manifestPath.DirectoryName
+            Import-Module -Name $manifestDir -ErrorAction Stop
+            Write-Host "   ✅ Successfully installed and imported $ModuleName" -ForegroundColor Green
         }
         finally {
             # Clean up temp ZIP
@@ -278,9 +301,6 @@ function Install-RequiredModule {
                 Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
             }
         }
-        
-        Import-Module $ModuleName -ErrorAction Stop
-        Write-Host "   ✅ Successfully installed $ModuleName" -ForegroundColor Green
     }
     catch {
         Write-Host "   ❌ Failed to install $ModuleName" -ForegroundColor Red
