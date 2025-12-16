@@ -30,14 +30,7 @@ param(
 # Set error action preference
 $ErrorActionPreference = "Stop"
 
-# Create temporary module directory
-$tempModulePath = Join-Path ([System.IO.Path]::GetTempPath()) "AzurePSModules_$PID"
-New-Item -ItemType Directory -Path $tempModulePath -Force | Out-Null
-
-# Add temp path to PSModulePath for this session
-$env:PSModulePath = "$tempModulePath$([IO.Path]::PathSeparator)$env:PSModulePath"
-
-# Set environment variables for PowerShell path resolution
+# Set ALL environment variables FIRST, before any operations
 # Use CODEBUNDLE_TEMP_DIR if available, otherwise use temp path
 $basePath = if (-not [string]::IsNullOrEmpty($env:CODEBUNDLE_TEMP_DIR)) {
     $env:CODEBUNDLE_TEMP_DIR
@@ -45,10 +38,60 @@ $basePath = if (-not [string]::IsNullOrEmpty($env:CODEBUNDLE_TEMP_DIR)) {
     [System.IO.Path]::GetTempPath()
 }
 
-# Set HOME (required for module path resolution on Linux/Mac)
+# Set HOME FIRST (required for module path resolution on Linux/Mac)
 if ([string]::IsNullOrEmpty($env:HOME)) {
     $env:HOME = $basePath
 }
+
+# Set USERPROFILE (Windows equivalent, PowerShell may check this)
+if ([string]::IsNullOrEmpty($env:USERPROFILE)) {
+    $env:USERPROFILE = $basePath
+}
+
+# Set TMP/TEMP (used for temporary files during module operations)
+if ([string]::IsNullOrEmpty($env:TMP)) {
+    $env:TMP = $basePath
+}
+if ([string]::IsNullOrEmpty($env:TEMP)) {
+    $env:TEMP = $basePath
+}
+
+# Set USER/USERNAME (some module operations may check this)
+if ([string]::IsNullOrEmpty($env:USER) -and [string]::IsNullOrEmpty($env:USERNAME)) {
+    $env:USER = "pwsh-user"
+    $env:USERNAME = "pwsh-user"
+}
+
+# Set PATH (required for many operations)
+if ([string]::IsNullOrEmpty($env:PATH)) {
+    $env:PATH = "/usr/local/bin:/usr/bin:/bin"
+}
+else {
+    # Ensure temp path is in PATH
+    if ($env:PATH -notlike "*${basePath}*") {
+        $env:PATH = "${basePath}:$env:PATH"
+    }
+}
+
+# Output all environment variables for debugging
+Write-Host "🔧 Environment Variables:" -ForegroundColor Cyan
+Write-Host "   HOME: $env:HOME" -ForegroundColor Gray
+Write-Host "   USERPROFILE: $env:USERPROFILE" -ForegroundColor Gray
+Write-Host "   TMP: $env:TMP" -ForegroundColor Gray
+Write-Host "   TEMP: $env:TEMP" -ForegroundColor Gray
+Write-Host "   USER: $env:USER" -ForegroundColor Gray
+Write-Host "   USERNAME: $env:USERNAME" -ForegroundColor Gray
+Write-Host "   PATH: $env:PATH" -ForegroundColor Gray
+Write-Host "   CODEBUNDLE_TEMP_DIR: $env:CODEBUNDLE_TEMP_DIR" -ForegroundColor Gray
+Write-Host "   basePath: $basePath" -ForegroundColor Gray
+Write-Host ""
+
+# Create temporary module directory
+$tempModulePath = Join-Path ([System.IO.Path]::GetTempPath()) "AzurePSModules_$PID"
+New-Item -ItemType Directory -Path $tempModulePath -Force | Out-Null
+
+# Add temp path to PSModulePath for this session
+$env:PSModulePath = "$tempModulePath$([IO.Path]::PathSeparator)$env:PSModulePath"
 
 # Create expected PowerShell directory structure under HOME
 # This helps PowerShellGet resolve paths correctly
@@ -385,19 +428,58 @@ Write-Host ""
 Write-Host "🔐 Checking Azure authentication status..." -ForegroundColor Cyan
 
 try {
-    $context = Get-AzContext
-    if ($null -eq $context) {
-        Write-Host "⚠️  Not logged in to Azure. Please authenticate..." -ForegroundColor Yellow
-        Connect-AzAccount
-        $context = Get-AzContext
+    $context = Get-AzContext -ErrorAction SilentlyContinue
+    
+    # Validate context is actually authenticated (has Account and Tenant)
+    $isValidContext = $null -ne $context -and 
+                      -not [string]::IsNullOrEmpty($context.Account) -and 
+                      -not [string]::IsNullOrEmpty($context.Account.Id) -and
+                      -not [string]::IsNullOrEmpty($context.Tenant) -and
+                      -not [string]::IsNullOrEmpty($context.Tenant.Id)
+    
+    if (-not $isValidContext) {
+        Write-Host "⚠️  Not authenticated to Azure or context is invalid." -ForegroundColor Yellow
+        
+        # Check if we're in a non-interactive environment
+        if (-not [Environment]::UserInteractive -or $null -ne [Console]::In -and [Console]::In.Peek() -eq -1) {
+            Write-Host "   Non-interactive session detected. Use one of the following:" -ForegroundColor Yellow
+            Write-Host "   - Connect-AzAccount -UseDeviceAuthentication" -ForegroundColor Yellow
+            Write-Host "   - Connect-AzAccount -ServicePrincipal -Credential `$cred -TenantId `$tenantId" -ForegroundColor Yellow
+            Write-Host "   - Connect-AzAccount -Identity (for managed identity)" -ForegroundColor Yellow
+            Write-Host "   - Set environment variables: AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID" -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "   Attempting interactive authentication..." -ForegroundColor Yellow
+            Connect-AzAccount -ErrorAction Stop
+            $context = Get-AzContext -ErrorAction Stop
+        }
+        
+        # Re-validate after authentication attempt
+        $isValidContext = $null -ne $context -and 
+                          -not [string]::IsNullOrEmpty($context.Account) -and 
+                          -not [string]::IsNullOrEmpty($context.Account.Id) -and
+                          -not [string]::IsNullOrEmpty($context.Tenant) -and
+                          -not [string]::IsNullOrEmpty($context.Tenant.Id)
+        
+        if (-not $isValidContext) {
+            throw "Authentication failed or context is invalid. Please authenticate to Azure first."
+        }
     }
     
     Write-Host "✅ Authenticated as: $($context.Account.Id)" -ForegroundColor Green
     Write-Host "   Tenant: $($context.Tenant.Id)" -ForegroundColor Gray
+    if ($context.Subscription) {
+        Write-Host "   Subscription: $($context.Subscription.Name) ($($context.Subscription.Id))" -ForegroundColor Gray
+    }
     Write-Host ""
 }
 catch {
     Write-Host "❌ Failed to authenticate to Azure: $_" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Please authenticate using one of these methods:" -ForegroundColor Yellow
+    Write-Host "  Connect-AzAccount -UseDeviceAuthentication" -ForegroundColor Yellow
+    Write-Host "  Connect-AzAccount -ServicePrincipal -Credential `$cred -TenantId `$tenantId" -ForegroundColor Yellow
+    Write-Host "  Connect-AzAccount -Identity" -ForegroundColor Yellow
     exit 1
 }
 
