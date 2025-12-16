@@ -514,27 +514,51 @@ try {
     if ($null -eq $context -and -not [string]::IsNullOrEmpty($env:AZURE_CONFIG_DIR)) {
         Write-Host "   Attempting to import context from Azure CLI..." -ForegroundColor Gray
         try {
-            # Az.Accounts should automatically pick up credentials from AZURE_CONFIG_DIR
-            # But we may need to explicitly import the context
-            $context = Get-AzContext -ErrorAction Stop
-        }
-        catch {
-            # If that doesn't work, try to import using Import-AzContext
-            try {
-                $azConfigPath = Join-Path $env:AZURE_CONFIG_DIR "azureProfile.json"
-                if (Test-Path $azConfigPath) {
-                    Write-Host "   Found Azure CLI profile, importing context..." -ForegroundColor Gray
-                    # Az.Accounts should automatically use the profile, but let's try to refresh
-                    $context = Get-AzContext -ListAvailable -ErrorAction SilentlyContinue | Select-Object -First 1
-                    if ($context) {
-                        Set-AzContext -Context $context -ErrorAction SilentlyContinue | Out-Null
+            # Check for Azure CLI profile file
+            $azProfilePath = Join-Path $env:AZURE_CONFIG_DIR "azureProfile.json"
+            $azAccessTokensPath = Join-Path $env:AZURE_CONFIG_DIR "accessTokens.json"
+            
+            if (Test-Path $azProfilePath) {
+                Write-Host "   Found Azure CLI profile at: $azProfilePath" -ForegroundColor Gray
+                
+                # Try to import context using Import-AzContext
+                # First, enable context autosave to the same directory
+                try {
+                    Enable-AzContextAutosave -Scope Process -ErrorAction SilentlyContinue
+                }
+                catch {
+                    # Ignore if already enabled
+                }
+                
+                # Try to import context from Azure CLI using Import-AzContext
+                # This should read the Azure CLI profile and import it
+                try {
+                    Write-Host "   Importing context from Azure CLI profile..." -ForegroundColor Gray
+                    Import-AzContext -ErrorAction Stop | Out-Null
+                    $context = Get-AzContext -ErrorAction Stop
+                    Write-Host "   Successfully imported context from Azure CLI" -ForegroundColor Green
+                }
+                catch {
+                    # If Import-AzContext doesn't work, try listing available contexts
+                    Write-Host "   Import-AzContext failed, trying to list available contexts..." -ForegroundColor Gray
+                    $availableContexts = Get-AzContext -ListAvailable -ErrorAction SilentlyContinue
+                    if ($availableContexts) {
+                        Write-Host "   Found $($availableContexts.Count) available context(s), selecting first..." -ForegroundColor Gray
+                        $context = $availableContexts | Select-Object -First 1
+                        Set-AzContext -Context $context -ErrorAction Stop | Out-Null
                         $context = Get-AzContext -ErrorAction Stop
+                    }
+                    else {
+                        Write-Host "   No contexts available. Azure CLI credentials may need to be imported manually." -ForegroundColor Yellow
                     }
                 }
             }
-            catch {
-                Write-Host "   Could not import from Azure CLI profile" -ForegroundColor Yellow
+            else {
+                Write-Host "   Azure CLI profile not found at: $azProfilePath" -ForegroundColor Yellow
             }
+        }
+        catch {
+            Write-Host "   Could not import from Azure CLI: $_" -ForegroundColor Yellow
         }
     }
     
