@@ -235,42 +235,47 @@ function Install-RequiredModule {
         # We need to ensure all environment variables are set before calling it
         # The path we pass should be fine, but internal dependency resolution might fail
         
-        # Try using Install-Module to the user module path we created, then copy to temp
-        # This works around Save-Module's path resolution issues
-        try {
-            $installParams = @{
-                Name = $ModuleName
-                Scope = "CurrentUser"
-                Force = $true
-                AllowClobber = $true
-                SkipPublisherCheck = $true
-                Repository = "PSGallery"
-            }
-            if ($MinimumVersion) {
-                $installParams.MinimumVersion = $MinimumVersion
-            }
-            
-            Install-Module @installParams -ErrorAction Stop
-            
-            # Copy from user module path to temp path
-            $installedModule = Get-Module -ListAvailable -Name $ModuleName | Select-Object -First 1
-            if ($installedModule) {
-                $sourcePath = $installedModule.ModuleBase
-                $destPath = Join-Path $absoluteTempPath $ModuleName
-                if (Test-Path $destPath) {
-                    Remove-Item $destPath -Recurse -Force
-                }
-                Copy-Item -Path $sourcePath -Destination $destPath -Recurse -Force
-            }
+        # PowerShellGet's Install-Module and Save-Module both fail due to internal path resolution
+        # Workaround: Manually download and extract the module using NuGet API
+        Write-Host "   Downloading module package directly..." -ForegroundColor Gray
+        
+        # Get module info to find download URL
+        $moduleInfo = Find-Module -Name $ModuleName -Repository PSGallery -ErrorAction Stop
+        $moduleVersion = if ($MinimumVersion -and $moduleInfo.Version -ge [version]$MinimumVersion) {
+            $moduleInfo.Version
+        } elseif ($MinimumVersion) {
+            throw "Available version $($moduleInfo.Version) is less than required $MinimumVersion"
+        } else {
+            $moduleInfo.Version
         }
-        catch {
-            # If Install-Module also fails, try Save-Module as last resort
-            Write-Host "   Install-Module failed, trying Save-Module directly..." -ForegroundColor Yellow
-            if ($MinimumVersion) {
-                Save-Module -Name $ModuleName -MinimumVersion $MinimumVersion -Path $absoluteTempPath -Force -Repository PSGallery -ErrorAction Stop
+        
+        # Construct NuGet package URL
+        $packageName = $ModuleName.ToLower()
+        $packageUrl = "https://www.powershellgallery.com/api/v2/package/$packageName/$moduleVersion"
+        
+        # Download to temp file
+        $tempZip = Join-Path ([System.IO.Path]::GetTempPath()) "$ModuleName-$moduleVersion.zip"
+        try {
+            Write-Host "   Downloading from: $packageUrl" -ForegroundColor Gray
+            Invoke-WebRequest -Uri $packageUrl -OutFile $tempZip -UseBasicParsing -ErrorAction Stop
+            
+            # Extract to temp module path
+            $moduleDestPath = Join-Path $absoluteTempPath $ModuleName
+            if (Test-Path $moduleDestPath) {
+                Remove-Item $moduleDestPath -Recurse -Force
             }
-            else {
-                Save-Module -Name $ModuleName -Path $absoluteTempPath -Force -Repository PSGallery -ErrorAction Stop
+            New-Item -ItemType Directory -Path $moduleDestPath -Force | Out-Null
+            
+            # Extract ZIP file
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($tempZip, $moduleDestPath)
+            
+            Write-Host "   Module extracted to: $moduleDestPath" -ForegroundColor Gray
+        }
+        finally {
+            # Clean up temp ZIP
+            if (Test-Path $tempZip) {
+                Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
             }
         }
         
