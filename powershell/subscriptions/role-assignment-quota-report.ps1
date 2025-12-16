@@ -213,37 +213,29 @@ function Install-RequiredModule {
             throw "Module version $($moduleInfo.Version) is less than required $MinimumVersion"
         }
         
-        # Verify path is valid and absolute before Save-Module
-        if ([string]::IsNullOrEmpty($absoluteTempPath)) {
-            throw "Temp module path is empty or invalid"
-        }
-        
-        # Ensure path exists and is writable
-        if (-not (Test-Path $absoluteTempPath)) {
-            New-Item -ItemType Directory -Path $absoluteTempPath -Force | Out-Null
-        }
-        
-        Write-Host "   Saving module to: $absoluteTempPath" -ForegroundColor Gray
+        Write-Host "   Installing to scope: CurrentUser" -ForegroundColor Gray
         if ($DebugMode) {
             Write-Host "   DEBUG: HOME=$env:HOME, USERPROFILE=$env:USERPROFILE, TMP=$env:TMP" -ForegroundColor Gray
             Write-Host "   DEBUG: PSModulePath=$env:PSModulePath" -ForegroundColor Gray
+            Write-Host "   DEBUG: Expected user module path: $psUserModulesPath" -ForegroundColor Gray
         }
         
-        # Try Save-Module with explicit path parameter
-        # Use splatting with explicit parameter names to avoid path resolution issues
-        try {
-            if ($MinimumVersion) {
-                Save-Module -Name $ModuleName -MinimumVersion $MinimumVersion -Path $absoluteTempPath -Force -Repository PSGallery -ErrorAction Stop
-            }
-            else {
-                Save-Module -Name $ModuleName -Path $absoluteTempPath -Force -Repository PSGallery -ErrorAction Stop
-            }
+        # Use Install-Module with CurrentUser scope
+        # Since we've set HOME and created the directory structure, this should work
+        $installParams = @{
+            Name = $ModuleName
+            Scope = "CurrentUser"
+            Force = $true
+            AllowClobber = $true
+            SkipPublisherCheck = $true
+            Repository = "PSGallery"
         }
-        catch {
-            # If Save-Module fails due to path issues, the directory structure should help
-            # Re-throw the original error since we've set up the environment
-            throw
+        
+        if ($MinimumVersion) {
+            $installParams.MinimumVersion = $MinimumVersion
         }
+        
+        Install-Module @installParams -ErrorAction Stop
         
         Import-Module $ModuleName -ErrorAction Stop
         Write-Host "   ✅ Successfully installed $ModuleName" -ForegroundColor Green
