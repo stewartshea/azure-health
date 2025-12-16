@@ -238,15 +238,21 @@ function Install-RequiredModule {
     
     Write-Host "📦 Checking for module: $ModuleName..." -ForegroundColor Cyan
     
-    if (Test-ModuleInstalled -ModuleName $ModuleName) {
-        Write-Host "   ✅ Module $ModuleName is already installed" -ForegroundColor Green
-        try {
-            Import-Module $ModuleName -Force -ErrorAction Stop
-        }
-        catch {
-            Write-Host "   ⚠️  Warning: Could not import $ModuleName, will retry later: $_" -ForegroundColor Yellow
-        }
+    # Check if module is in our temp path (reliable location)
+    $moduleInTempPath = Join-Path $tempModulePath $ModuleName
+    if (Test-Path $moduleInTempPath) {
+        Write-Host "   ✅ Module $ModuleName is already installed in temp path" -ForegroundColor Green
         return
+    }
+    
+    # Check if module is installed elsewhere
+    if (Test-ModuleInstalled -ModuleName $ModuleName) {
+        Write-Host "   ⚠️  Module $ModuleName is installed but may have path issues" -ForegroundColor Yellow
+        Write-Host "   Reinstalling to temp directory to avoid path resolution problems..." -ForegroundColor Yellow
+        # Fall through to installation logic below
+    }
+    else {
+        Write-Host "   ⚠️  Module $ModuleName not found. Installing..." -ForegroundColor Yellow
     }
     
     Write-Host "   ⚠️  Module $ModuleName not found. Installing..." -ForegroundColor Yellow
@@ -400,8 +406,13 @@ foreach ($module in $requiredModules) {
             # Find manifest in the module directory
             $manifest = Get-ChildItem -Path $modulePath -Filter "*.psd1" -Recurse | Select-Object -First 1
             if ($manifest) {
-                # Import using the manifest's directory path
-                Import-Module -Name $manifest.DirectoryName -Force -ErrorAction Stop
+                # Get absolute path to the manifest's directory
+                $manifestDir = [System.IO.Path]::GetFullPath($manifest.DirectoryName)
+                if ([string]::IsNullOrWhiteSpace($manifestDir)) {
+                    throw "Manifest directory path is empty"
+                }
+                # Import using absolute directory path
+                Import-Module -Name $manifestDir -Force -ErrorAction Stop
                 Write-Host "   ✅ Imported $($module.Name) from temp path" -ForegroundColor Green
             }
             else {
@@ -416,6 +427,16 @@ foreach ($module in $requiredModules) {
     }
     catch {
         Write-Host "   ❌ Failed to import $($module.Name): $_" -ForegroundColor Red
+        if (Test-Path $modulePath) {
+            Write-Host "   Module path exists: $modulePath" -ForegroundColor Gray
+            $manifest = Get-ChildItem -Path $modulePath -Filter "*.psd1" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($manifest) {
+                Write-Host "   Manifest found: $($manifest.FullName)" -ForegroundColor Gray
+                Write-Host "   Manifest directory: $($manifest.DirectoryName)" -ForegroundColor Gray
+                $absPath = [System.IO.Path]::GetFullPath($manifest.DirectoryName)
+                Write-Host "   Absolute path: $absPath" -ForegroundColor Gray
+            }
+        }
         exit 1
     }
 }
