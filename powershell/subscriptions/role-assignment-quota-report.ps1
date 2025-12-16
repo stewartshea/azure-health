@@ -73,6 +73,14 @@ else {
     }
 }
 
+# Also set environment variables via .NET so modules can access them during initialization
+# This ensures .NET Environment methods can resolve paths correctly
+[Environment]::SetEnvironmentVariable('HOME', $env:HOME, 'Process')
+[Environment]::SetEnvironmentVariable('USERPROFILE', $env:USERPROFILE, 'Process')
+[Environment]::SetEnvironmentVariable('TMP', $env:TMP, 'Process')
+[Environment]::SetEnvironmentVariable('TEMP', $env:TEMP, 'Process')
+[Environment]::SetEnvironmentVariable('PATH', $env:PATH, 'Process')
+
 # Output all environment variables for debugging
 Write-Host "🔧 Environment Variables:" -ForegroundColor Cyan
 Write-Host "   HOME: $env:HOME" -ForegroundColor Gray
@@ -411,9 +419,24 @@ foreach ($module in $requiredModules) {
                 if ([string]::IsNullOrWhiteSpace($manifestDir)) {
                     throw "Manifest directory path is empty"
                 }
-                # Import using absolute directory path
-                Import-Module -Name $manifestDir -Force -ErrorAction Stop
-                Write-Host "   ✅ Imported $($module.Name) from temp path" -ForegroundColor Green
+                
+                # Import using explicit directory path to avoid any module discovery issues
+                # This bypasses PowerShell's module name resolution which might find broken installations
+                # Use -Global scope to ensure it's available, and -NoClobber to avoid conflicts
+                if ($DebugMode) {
+                    Write-Host "   DEBUG: Attempting to import from: $manifestDir" -ForegroundColor Gray
+                    Write-Host "   DEBUG: Manifest file: $($manifest.FullName)" -ForegroundColor Gray
+                }
+                Import-Module -Name $manifestDir -Force -ErrorAction Stop -Scope Global
+                
+                # Verify the module was actually imported from our location
+                $importedModule = Get-Module -Name $module.Name
+                if ($importedModule -and $importedModule.ModuleBase -like "$tempModulePath*") {
+                    Write-Host "   ✅ Imported $($module.Name) from temp path" -ForegroundColor Green
+                }
+                else {
+                    Write-Host "   ✅ Imported $($module.Name) (location: $($importedModule.ModuleBase))" -ForegroundColor Green
+                }
             }
             else {
                 throw "Manifest not found in $modulePath"
