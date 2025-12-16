@@ -37,8 +37,11 @@ New-Item -ItemType Directory -Path $tempModulePath -Force | Out-Null
 # Add temp path to PSModulePath for this session
 $env:PSModulePath = "$tempModulePath$([IO.Path]::PathSeparator)$env:PSModulePath"
 
-# Set HOME if it's empty (this fixes the Install-Module path issue)
-if ([string]::IsNullOrEmpty($env:HOME)) {
+# Set HOME to CODEBUNDLE_TEMP_DIR if available, otherwise use temp path
+if (-not [string]::IsNullOrEmpty($env:CODEBUNDLE_TEMP_DIR)) {
+    $env:HOME = $env:CODEBUNDLE_TEMP_DIR
+}
+elseif ([string]::IsNullOrEmpty($env:HOME)) {
     $env:HOME = [System.IO.Path]::GetTempPath()
 }
 
