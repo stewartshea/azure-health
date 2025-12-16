@@ -39,8 +39,13 @@ $basePath = if (-not [string]::IsNullOrEmpty($env:CODEBUNDLE_TEMP_DIR)) {
 }
 
 # Set HOME FIRST (required for module path resolution on Linux/Mac)
+# Az.Accounts startup script uses $HOME (PowerShell variable), not $env:HOME
 if ([string]::IsNullOrEmpty($env:HOME)) {
     $env:HOME = $basePath
+}
+# Also set PowerShell $HOME variable (Az.Accounts uses this in its startup script)
+if ([string]::IsNullOrEmpty($HOME)) {
+    $HOME = $basePath
 }
 
 # Set USERPROFILE (Windows equivalent, PowerShell may check this)
@@ -427,51 +432,35 @@ foreach ($module in $requiredModules) {
                     Write-Host "   DEBUG: Manifest directory: $manifestDir" -ForegroundColor Gray
                 }
                 
-                # Try multiple import methods to work around path resolution issues
-                $imported = $false
-                
-                # Method 1: Import using manifest file path
-                if (-not $imported) {
-                    try {
-                        Import-Module -Name $manifestFullPath -Force -ErrorAction Stop
-                        $imported = $true
-                        Write-Host "   ✅ Imported $($module.Name) from manifest file" -ForegroundColor Green
-                    }
-                    catch {
-                        if ($DebugMode) {
-                            Write-Host "   DEBUG: Method 1 failed: $_" -ForegroundColor Gray
-                        }
-                    }
+                # Import using the module name - it should find it via PSModulePath now
+                # The temp path is already in PSModulePath, so PowerShell should discover it
+                # This avoids passing paths directly to Import-Module which triggers path resolution
+                try {
+                    # Temporarily set PSModulePath to only our temp path to force discovery there
+                    $originalPSModulePath = $env:PSModulePath
+                    $env:PSModulePath = "$tempModulePath$([IO.Path]::PathSeparator)$originalPSModulePath"
+                    
+                    # Now import by name - it should find the module in our temp path
+                    Import-Module -Name $module.Name -Force -ErrorAction Stop
+                    
+                    # Restore original PSModulePath
+                    $env:PSModulePath = $originalPSModulePath
+                    
+                    Write-Host "   ✅ Imported $($module.Name)" -ForegroundColor Green
                 }
-                
-                # Method 2: Import using directory path
-                if (-not $imported) {
-                    try {
-                        Import-Module -Name $manifestDir -Force -ErrorAction Stop
-                        $imported = $true
-                        Write-Host "   ✅ Imported $($module.Name) from directory" -ForegroundColor Green
+                catch {
+                    # Restore PSModulePath on error
+                    $env:PSModulePath = $originalPSModulePath
+                    
+                    # If that fails, the module might have initialization code that's failing
+                    # Try to get more details about what's failing
+                    if ($DebugMode) {
+                        Write-Host "   DEBUG: Import by name failed: $_" -ForegroundColor Gray
+                        Write-Host "   DEBUG: PSModulePath was: $env:PSModulePath" -ForegroundColor Gray
+                        Write-Host "   DEBUG: Module path: $modulePath" -ForegroundColor Gray
+                        Write-Host "   DEBUG: Manifest: $manifestFullPath" -ForegroundColor Gray
                     }
-                    catch {
-                        if ($DebugMode) {
-                            Write-Host "   DEBUG: Method 2 failed: $_" -ForegroundColor Gray
-                        }
-                    }
-                }
-                
-                # Method 3: Use Get-ModuleInfo and import that
-                if (-not $imported) {
-                    try {
-                        $moduleInfo = Test-ModuleManifest -Path $manifestFullPath -ErrorAction Stop
-                        Import-Module -ModuleInfo $moduleInfo -Force -ErrorAction Stop
-                        $imported = $true
-                        Write-Host "   ✅ Imported $($module.Name) using ModuleInfo" -ForegroundColor Green
-                    }
-                    catch {
-                        if ($DebugMode) {
-                            Write-Host "   DEBUG: Method 3 failed: $_" -ForegroundColor Gray
-                        }
-                        throw "All import methods failed. Last error: $_"
-                    }
+                    throw "Failed to import $($module.Name): $_"
                 }
             }
             else {
