@@ -213,29 +213,66 @@ function Install-RequiredModule {
             throw "Module version $($moduleInfo.Version) is less than required $MinimumVersion"
         }
         
-        Write-Host "   Installing to scope: CurrentUser" -ForegroundColor Gray
+        Write-Host "   Installing to temp directory: $absoluteTempPath" -ForegroundColor Gray
         if ($DebugMode) {
             Write-Host "   DEBUG: HOME=$env:HOME, USERPROFILE=$env:USERPROFILE, TMP=$env:TMP" -ForegroundColor Gray
             Write-Host "   DEBUG: PSModulePath=$env:PSModulePath" -ForegroundColor Gray
-            Write-Host "   DEBUG: Expected user module path: $psUserModulesPath" -ForegroundColor Gray
+            Write-Host "   DEBUG: Absolute temp path: $absoluteTempPath" -ForegroundColor Gray
         }
         
-        # Use Install-Module with CurrentUser scope
-        # Since we've set HOME and created the directory structure, this should work
-        $installParams = @{
-            Name = $ModuleName
-            Scope = "CurrentUser"
-            Force = $true
-            AllowClobber = $true
-            SkipPublisherCheck = $true
-            Repository = "PSGallery"
+        # Use Save-Module with explicit absolute path
+        # Ensure the path is a valid string and not empty
+        if ([string]::IsNullOrWhiteSpace($absoluteTempPath)) {
+            throw "Absolute temp path is null or empty: $absoluteTempPath"
         }
         
-        if ($MinimumVersion) {
-            $installParams.MinimumVersion = $MinimumVersion
+        # Verify path exists and is writable
+        if (-not (Test-Path $absoluteTempPath)) {
+            $null = New-Item -ItemType Directory -Path $absoluteTempPath -Force
         }
         
-        Install-Module @installParams -ErrorAction Stop
+        # PowerShellGet's Save-Module internally uses paths that may resolve to empty strings
+        # We need to ensure all environment variables are set before calling it
+        # The path we pass should be fine, but internal dependency resolution might fail
+        
+        # Try using Install-Module to the user module path we created, then copy to temp
+        # This works around Save-Module's path resolution issues
+        try {
+            $installParams = @{
+                Name = $ModuleName
+                Scope = "CurrentUser"
+                Force = $true
+                AllowClobber = $true
+                SkipPublisherCheck = $true
+                Repository = "PSGallery"
+            }
+            if ($MinimumVersion) {
+                $installParams.MinimumVersion = $MinimumVersion
+            }
+            
+            Install-Module @installParams -ErrorAction Stop
+            
+            # Copy from user module path to temp path
+            $installedModule = Get-Module -ListAvailable -Name $ModuleName | Select-Object -First 1
+            if ($installedModule) {
+                $sourcePath = $installedModule.ModuleBase
+                $destPath = Join-Path $absoluteTempPath $ModuleName
+                if (Test-Path $destPath) {
+                    Remove-Item $destPath -Recurse -Force
+                }
+                Copy-Item -Path $sourcePath -Destination $destPath -Recurse -Force
+            }
+        }
+        catch {
+            # If Install-Module also fails, try Save-Module as last resort
+            Write-Host "   Install-Module failed, trying Save-Module directly..." -ForegroundColor Yellow
+            if ($MinimumVersion) {
+                Save-Module -Name $ModuleName -MinimumVersion $MinimumVersion -Path $absoluteTempPath -Force -Repository PSGallery -ErrorAction Stop
+            }
+            else {
+                Save-Module -Name $ModuleName -Path $absoluteTempPath -Force -Repository PSGallery -ErrorAction Stop
+            }
+        }
         
         Import-Module $ModuleName -ErrorAction Stop
         Write-Host "   ✅ Successfully installed $ModuleName" -ForegroundColor Green
