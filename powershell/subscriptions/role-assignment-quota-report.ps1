@@ -84,8 +84,8 @@ if ([string]::IsNullOrEmpty($env:PATH)) {
 }
 else {
     # Ensure temp path is in PATH
-    if ($env:PATH -notlike "*$basePath*") {
-        $env:PATH = "$basePath:$env:PATH"
+    if ($env:PATH -notlike "*${basePath}*") {
+        $env:PATH = "${basePath}:$env:PATH"
     }
 }
 
