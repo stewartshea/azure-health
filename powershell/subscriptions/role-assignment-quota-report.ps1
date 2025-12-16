@@ -414,28 +414,64 @@ foreach ($module in $requiredModules) {
             # Find manifest in the module directory
             $manifest = Get-ChildItem -Path $modulePath -Filter "*.psd1" -Recurse | Select-Object -First 1
             if ($manifest) {
-                # Get absolute path to the manifest's directory
+                # Get absolute paths
+                $manifestFullPath = [System.IO.Path]::GetFullPath($manifest.FullName)
                 $manifestDir = [System.IO.Path]::GetFullPath($manifest.DirectoryName)
-                if ([string]::IsNullOrWhiteSpace($manifestDir)) {
-                    throw "Manifest directory path is empty"
+                
+                if ([string]::IsNullOrWhiteSpace($manifestFullPath) -or [string]::IsNullOrWhiteSpace($manifestDir)) {
+                    throw "Manifest path is empty - FullPath: $manifestFullPath, Directory: $manifestDir"
                 }
                 
-                # Import using explicit directory path to avoid any module discovery issues
-                # This bypasses PowerShell's module name resolution which might find broken installations
-                # Use -Global scope to ensure it's available, and -NoClobber to avoid conflicts
                 if ($DebugMode) {
-                    Write-Host "   DEBUG: Attempting to import from: $manifestDir" -ForegroundColor Gray
-                    Write-Host "   DEBUG: Manifest file: $($manifest.FullName)" -ForegroundColor Gray
+                    Write-Host "   DEBUG: Manifest file: $manifestFullPath" -ForegroundColor Gray
+                    Write-Host "   DEBUG: Manifest directory: $manifestDir" -ForegroundColor Gray
                 }
-                Import-Module -Name $manifestDir -Force -ErrorAction Stop -Scope Global
                 
-                # Verify the module was actually imported from our location
-                $importedModule = Get-Module -Name $module.Name
-                if ($importedModule -and $importedModule.ModuleBase -like "$tempModulePath*") {
-                    Write-Host "   ✅ Imported $($module.Name) from temp path" -ForegroundColor Green
+                # Try multiple import methods to work around path resolution issues
+                $imported = $false
+                
+                # Method 1: Import using manifest file path
+                if (-not $imported) {
+                    try {
+                        Import-Module -Name $manifestFullPath -Force -ErrorAction Stop
+                        $imported = $true
+                        Write-Host "   ✅ Imported $($module.Name) from manifest file" -ForegroundColor Green
+                    }
+                    catch {
+                        if ($DebugMode) {
+                            Write-Host "   DEBUG: Method 1 failed: $_" -ForegroundColor Gray
+                        }
+                    }
                 }
-                else {
-                    Write-Host "   ✅ Imported $($module.Name) (location: $($importedModule.ModuleBase))" -ForegroundColor Green
+                
+                # Method 2: Import using directory path
+                if (-not $imported) {
+                    try {
+                        Import-Module -Name $manifestDir -Force -ErrorAction Stop
+                        $imported = $true
+                        Write-Host "   ✅ Imported $($module.Name) from directory" -ForegroundColor Green
+                    }
+                    catch {
+                        if ($DebugMode) {
+                            Write-Host "   DEBUG: Method 2 failed: $_" -ForegroundColor Gray
+                        }
+                    }
+                }
+                
+                # Method 3: Use Get-ModuleInfo and import that
+                if (-not $imported) {
+                    try {
+                        $moduleInfo = Test-ModuleManifest -Path $manifestFullPath -ErrorAction Stop
+                        Import-Module -ModuleInfo $moduleInfo -Force -ErrorAction Stop
+                        $imported = $true
+                        Write-Host "   ✅ Imported $($module.Name) using ModuleInfo" -ForegroundColor Green
+                    }
+                    catch {
+                        if ($DebugMode) {
+                            Write-Host "   DEBUG: Method 3 failed: $_" -ForegroundColor Gray
+                        }
+                        throw "All import methods failed. Last error: $_"
+                    }
                 }
             }
             else {
