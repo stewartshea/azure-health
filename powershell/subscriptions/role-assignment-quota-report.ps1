@@ -37,12 +37,45 @@ New-Item -ItemType Directory -Path $tempModulePath -Force | Out-Null
 # Add temp path to PSModulePath for this session
 $env:PSModulePath = "$tempModulePath$([IO.Path]::PathSeparator)$env:PSModulePath"
 
-# Set HOME to CODEBUNDLE_TEMP_DIR if available, otherwise use temp path
-if (-not [string]::IsNullOrEmpty($env:CODEBUNDLE_TEMP_DIR)) {
-    $env:HOME = $env:CODEBUNDLE_TEMP_DIR
+# Set environment variables for PowerShell path resolution
+# Use CODEBUNDLE_TEMP_DIR if available, otherwise use temp path
+$basePath = if (-not [string]::IsNullOrEmpty($env:CODEBUNDLE_TEMP_DIR)) {
+    $env:CODEBUNDLE_TEMP_DIR
+} else {
+    [System.IO.Path]::GetTempPath()
 }
-elseif ([string]::IsNullOrEmpty($env:HOME)) {
-    $env:HOME = [System.IO.Path]::GetTempPath()
+
+# Set HOME (required for module path resolution on Linux/Mac)
+if ([string]::IsNullOrEmpty($env:HOME)) {
+    $env:HOME = $basePath
+}
+
+# Create expected PowerShell directory structure under HOME
+# This helps PowerShellGet resolve paths correctly
+$psUserModulesPath = if ($IsWindows -or $PSVersionTable.Platform -eq 'Win32NT' -or $null -eq $PSVersionTable.Platform) {
+    Join-Path $env:HOME "Documents\PowerShell\Modules"
+} else {
+    Join-Path $env:HOME ".local/share/powershell/Modules"
+}
+New-Item -ItemType Directory -Path $psUserModulesPath -Force | Out-Null
+
+# Set USERPROFILE (Windows equivalent, PowerShell may check this)
+if ([string]::IsNullOrEmpty($env:USERPROFILE)) {
+    $env:USERPROFILE = $basePath
+}
+
+# Set TMP/TEMP if not set (used for temporary files during module operations)
+if ([string]::IsNullOrEmpty($env:TMP)) {
+    $env:TMP = $basePath
+}
+if ([string]::IsNullOrEmpty($env:TEMP)) {
+    $env:TEMP = $basePath
+}
+
+# Set USER/USERNAME if not set (some module operations may check this)
+if ([string]::IsNullOrEmpty($env:USER) -and [string]::IsNullOrEmpty($env:USERNAME)) {
+    $env:USER = "pwsh-user"
+    $env:USERNAME = "pwsh-user"
 }
 
 #region Module Management
@@ -165,21 +198,53 @@ function Install-RequiredModule {
     Write-Host "   ⚠️  Module $ModuleName not found. Installing..." -ForegroundColor Yellow
     
     try {
-        Write-Host "   Installing to temp directory: $tempModulePath" -ForegroundColor Gray
-        
-        # Use Save-Module to temp path, then it will be available via PSModulePath
-        $saveParams = @{
-            Name = $ModuleName
-            Path = $tempModulePath
-            Force = $true
-            Repository = "PSGallery"
+        # Ensure temp path is absolute and exists
+        $absoluteTempPath = [System.IO.Path]::GetFullPath($tempModulePath)
+        if (-not (Test-Path $absoluteTempPath)) {
+            New-Item -ItemType Directory -Path $absoluteTempPath -Force | Out-Null
         }
         
-        if ($MinimumVersion) {
-            $saveParams.MinimumVersion = $MinimumVersion
+        Write-Host "   Installing to temp directory: $absoluteTempPath" -ForegroundColor Gray
+        
+        # Verify we can find the module first
+        Write-Host "   Verifying module availability..." -ForegroundColor Gray
+        $moduleInfo = Find-Module -Name $ModuleName -Repository PSGallery -ErrorAction Stop
+        if ($MinimumVersion -and $moduleInfo.Version -lt [version]$MinimumVersion) {
+            throw "Module version $($moduleInfo.Version) is less than required $MinimumVersion"
         }
         
-        Save-Module @saveParams -ErrorAction Stop
+        # Verify path is valid and absolute before Save-Module
+        if ([string]::IsNullOrEmpty($absoluteTempPath)) {
+            throw "Temp module path is empty or invalid"
+        }
+        
+        # Ensure path exists and is writable
+        if (-not (Test-Path $absoluteTempPath)) {
+            New-Item -ItemType Directory -Path $absoluteTempPath -Force | Out-Null
+        }
+        
+        Write-Host "   Saving module to: $absoluteTempPath" -ForegroundColor Gray
+        if ($DebugMode) {
+            Write-Host "   DEBUG: HOME=$env:HOME, USERPROFILE=$env:USERPROFILE, TMP=$env:TMP" -ForegroundColor Gray
+            Write-Host "   DEBUG: PSModulePath=$env:PSModulePath" -ForegroundColor Gray
+        }
+        
+        # Try Save-Module with explicit path parameter
+        # Use splatting with explicit parameter names to avoid path resolution issues
+        try {
+            if ($MinimumVersion) {
+                Save-Module -Name $ModuleName -MinimumVersion $MinimumVersion -Path $absoluteTempPath -Force -Repository PSGallery -ErrorAction Stop
+            }
+            else {
+                Save-Module -Name $ModuleName -Path $absoluteTempPath -Force -Repository PSGallery -ErrorAction Stop
+            }
+        }
+        catch {
+            # If Save-Module fails due to path issues, the directory structure should help
+            # Re-throw the original error since we've set up the environment
+            throw
+        }
+        
         Import-Module $ModuleName -ErrorAction Stop
         Write-Host "   ✅ Successfully installed $ModuleName" -ForegroundColor Green
     }
@@ -191,6 +256,7 @@ function Install-RequiredModule {
         Write-Host "   1. Check internet connectivity" -ForegroundColor Yellow
         Write-Host "   2. Verify PSGallery access: Find-Module $ModuleName" -ForegroundColor Yellow
         Write-Host "   3. Check temp directory: $tempModulePath" -ForegroundColor Yellow
+        Write-Host "   4. Environment check - HOME: $env:HOME, USERPROFILE: $env:USERPROFILE" -ForegroundColor Yellow
         throw
     }
 }
