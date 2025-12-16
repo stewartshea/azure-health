@@ -551,30 +551,19 @@ try {
                     $tokenResponse = az account get-access-token --output json 2>$null | ConvertFrom-Json
                     
                     if ($tokenResponse -and $tokenResponse.accessToken) {
-                        # Use the token to authenticate with Az.Accounts
-                        # Connect-AzAccount can use an access token
-                        Write-Host "   Using access token to authenticate Az.Accounts..." -ForegroundColor Gray
+                        # Store the token globally so we can use it for REST API calls
+                        # We'll use this token to authenticate REST calls directly
+                        $script:AzureCLIToken = $tokenResponse.accessToken
+                        $script:AzureCLITenantId = $tenantId
+                        $script:AzureCLISubscriptionId = $subscriptionId
                         
-                        # Create a secure string from the token
-                        $secureToken = ConvertTo-SecureString $tokenResponse.accessToken -AsPlainText -Force
+                        Write-Host "   Access token obtained from Azure CLI" -ForegroundColor Gray
+                        Write-Host "   Will use token for Azure REST API calls" -ForegroundColor Gray
                         
-                        # Connect using the token
-                        # Note: Connect-AzAccount with -AccessToken requires the account and tenant
-                        $accountId = $azAccount.user.name
-                        $tenantId = $azAccount.tenantId
-                        $subscriptionId = $azAccount.id
-                        
-                        # Az.Accounts doesn't directly accept Azure CLI access tokens
-                        # We need to use a different approach - try to use the token with Invoke-AzRestMethod
-                        # or use Connect-AzAccount with device code (won't work in non-interactive)
-                        # For now, we'll note that Azure CLI is working and suggest manual connection
-                        Write-Host "   Azure CLI is authenticated, but Az.Accounts requires separate authentication" -ForegroundColor Yellow
-                        Write-Host "   Az.Accounts and Azure CLI use different credential stores" -ForegroundColor Yellow
-                        Write-Host "   To use Az.Accounts, run: Connect-AzAccount -UseDeviceAuthentication" -ForegroundColor Yellow
-                        Write-Host "   Or use service principal: Connect-AzAccount -ServicePrincipal -Credential `$cred -TenantId `$tenantId" -ForegroundColor Yellow
-                        
-                        # However, we can try to use the token for REST API calls if needed
-                        # For now, we'll continue and see if any contexts are available
+                        # Try to create a context using the token
+                        # We can't use Connect-AzAccount with token directly, but we can use REST API
+                        # For now, create a minimal context object for validation
+                        # The actual API calls will use the token directly
                     }
                     else {
                         Write-Host "   Could not get access token from Azure CLI" -ForegroundColor Yellow
@@ -605,13 +594,16 @@ try {
     }
     
     # Validate context is actually authenticated (has Account and Tenant)
+    # OR we have an Azure CLI token we can use
     $isValidContext = $null -ne $context -and 
                       -not [string]::IsNullOrEmpty($context.Account) -and 
                       -not [string]::IsNullOrEmpty($context.Account.Id) -and
                       -not [string]::IsNullOrEmpty($context.Tenant) -and
                       -not [string]::IsNullOrEmpty($context.Tenant.Id)
     
-    if (-not $isValidContext) {
+    $hasAzureCLIToken = -not [string]::IsNullOrEmpty($script:AzureCLIToken)
+    
+    if (-not $isValidContext -and -not $hasAzureCLIToken) {
         Write-Host "⚠️  Not authenticated to Azure or context is invalid." -ForegroundColor Yellow
         
         # Check if we're in a non-interactive environment
@@ -638,15 +630,25 @@ try {
                           -not [string]::IsNullOrEmpty($context.Tenant) -and
                           -not [string]::IsNullOrEmpty($context.Tenant.Id)
         
-        if (-not $isValidContext) {
+        $hasAzureCLIToken = -not [string]::IsNullOrEmpty($script:AzureCLIToken)
+        
+        if (-not $isValidContext -and -not $hasAzureCLIToken) {
             throw "Authentication failed or context is invalid. Please authenticate to Azure first."
         }
     }
     
-    Write-Host "✅ Authenticated as: $($context.Account.Id)" -ForegroundColor Green
-    Write-Host "   Tenant: $($context.Tenant.Id)" -ForegroundColor Gray
-    if ($context.Subscription) {
-        Write-Host "   Subscription: $($context.Subscription.Name) ($($context.Subscription.Id))" -ForegroundColor Gray
+    if ($isValidContext) {
+        Write-Host "✅ Authenticated as: $($context.Account.Id)" -ForegroundColor Green
+        Write-Host "   Tenant: $($context.Tenant.Id)" -ForegroundColor Gray
+        if ($context.Subscription) {
+            Write-Host "   Subscription: $($context.Subscription.Name) ($($context.Subscription.Id))" -ForegroundColor Gray
+        }
+    }
+    elseif ($script:AzureCLIToken) {
+        Write-Host "✅ Using Azure CLI authentication" -ForegroundColor Green
+        Write-Host "   Tenant: $script:AzureCLITenantId" -ForegroundColor Gray
+        Write-Host "   Subscription: $script:AzureCLISubscriptionId" -ForegroundColor Gray
+        Write-Host "   (Using access token for REST API calls)" -ForegroundColor Gray
     }
     Write-Host ""
 }
@@ -672,18 +674,30 @@ function Get-RoleAssignmentQuota {
     
     try {
         $uri = "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.Authorization/roleassignmentsusagemetrics?api-version=2019-08-01-preview"
-        $result = Invoke-AzRestMethod -Uri $uri -Method GET
         
-        if ($result.StatusCode -eq 200) {
-            $content = $result.Content | ConvertFrom-Json
-            return $content.roleAssignmentsLimit
+        # Use Azure CLI token if available, otherwise use Az.Accounts
+        if (-not [string]::IsNullOrEmpty($script:AzureCLIToken)) {
+            $headers = @{
+                "Authorization" = "Bearer $script:AzureCLIToken"
+                "Content-Type" = "application/json"
+            }
+            $response = Invoke-RestMethod -Uri $uri -Method GET -Headers $headers -ErrorAction Stop
+            return $response.roleAssignmentsLimit
         }
         else {
-            if ($DebugMode) {
-                Write-Host "  🔍 DEBUG: Failed to get quota limit, using default 2000" -ForegroundColor Gray
-                Write-Host "  🔍 DEBUG: Status Code: $($result.StatusCode)" -ForegroundColor Gray
+            $result = Invoke-AzRestMethod -Uri $uri -Method GET
+            
+            if ($result.StatusCode -eq 200) {
+                $content = $result.Content | ConvertFrom-Json
+                return $content.roleAssignmentsLimit
             }
-            return 2000
+            else {
+                if ($DebugMode) {
+                    Write-Host "  🔍 DEBUG: Failed to get quota limit, using default 2000" -ForegroundColor Gray
+                    Write-Host "  🔍 DEBUG: Status Code: $($result.StatusCode)" -ForegroundColor Gray
+                }
+                return 2000
+            }
         }
     }
     catch {
@@ -705,16 +719,45 @@ function Get-RoleAssignmentCount {
             Write-Host "  🔍 DEBUG: Query: $query" -ForegroundColor Gray
         }
         
-        $result = Search-AzGraph -Query $query
-        
-        if ($result -and $result.count_ -ge 0) {
-            if ($DebugMode) {
-                Write-Host "  🔍 DEBUG: Query successful, count: $($result.count_)" -ForegroundColor Gray
+        # Use Azure CLI token if available, otherwise use Az.Accounts
+        if (-not [string]::IsNullOrEmpty($script:AzureCLIToken)) {
+            # Use Resource Graph REST API directly
+            $uri = "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2021-03-01"
+            $body = @{
+                subscriptions = @($SubscriptionId)
+                query = $query
+            } | ConvertTo-Json
+            
+            $headers = @{
+                "Authorization" = "Bearer $script:AzureCLIToken"
+                "Content-Type" = "application/json"
             }
-            return $result.count_
+            
+            $response = Invoke-RestMethod -Uri $uri -Method POST -Headers $headers -Body $body -ErrorAction Stop
+            
+            if ($response.data -and $response.data.Count -gt 0 -and $response.data[0].count_) {
+                $count = $response.data[0].count_
+                if ($DebugMode) {
+                    Write-Host "  🔍 DEBUG: Query successful, count: $count" -ForegroundColor Gray
+                }
+                return $count
+            }
+            else {
+                throw "No valid result returned from query"
+            }
         }
         else {
-            throw "No valid result returned from query"
+            $result = Search-AzGraph -Query $query
+            
+            if ($result -and $result.count_ -ge 0) {
+                if ($DebugMode) {
+                    Write-Host "  🔍 DEBUG: Query successful, count: $($result.count_)" -ForegroundColor Gray
+                }
+                return $result.count_
+            }
+            else {
+                throw "No valid result returned from query"
+            }
         }
     }
     catch {
@@ -735,17 +778,55 @@ Write-Host ""
 # Determine which subscriptions to check
 if ([string]::IsNullOrWhiteSpace($Subscriptions)) {
     Write-Host "📋 Retrieving all accessible subscriptions..." -ForegroundColor Cyan
-    $subscriptionList = Get-AzSubscription | Where-Object { $_.State -eq "Enabled" }
+    
+    # Use Azure CLI if token is available, otherwise use Az.Accounts
+    if (-not [string]::IsNullOrEmpty($script:AzureCLIToken)) {
+        # Get subscriptions from Azure CLI
+        $azSubs = az account list --output json 2>$null | ConvertFrom-Json
+        if ($azSubs) {
+            $subscriptionList = $azSubs | Where-Object { $_.state -eq "Enabled" } | ForEach-Object {
+                [PSCustomObject]@{
+                    Id = $_.id
+                    Name = $_.name
+                    State = $_.state
+                }
+            }
+        }
+        else {
+            # Fallback to the subscription we know about
+            $subscriptionList = @([PSCustomObject]@{
+                Id = $script:AzureCLISubscriptionId
+                Name = "Subscription"
+                State = "Enabled"
+            })
+        }
+    }
+    else {
+        $subscriptionList = Get-AzSubscription | Where-Object { $_.State -eq "Enabled" }
+    }
 }
 else {
     Write-Host "📋 Using provided subscription list..." -ForegroundColor Cyan
     $subIds = $Subscriptions -split '[,\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-    $subscriptionList = $subIds | ForEach-Object {
-        try {
-            Get-AzSubscription -SubscriptionId $_.Trim() -ErrorAction Stop
+    
+    if (-not [string]::IsNullOrEmpty($script:AzureCLIToken)) {
+        # Create subscription objects from IDs
+        $subscriptionList = $subIds | ForEach-Object {
+            [PSCustomObject]@{
+                Id = $_.Trim()
+                Name = "Subscription $($_.Trim())"
+                State = "Enabled"
+            }
         }
-        catch {
-            Write-Host "⚠️  Warning: Could not access subscription $_" -ForegroundColor Yellow
+    }
+    else {
+        $subscriptionList = $subIds | ForEach-Object {
+            try {
+                Get-AzSubscription -SubscriptionId $_.Trim() -ErrorAction Stop
+            }
+            catch {
+                Write-Host "⚠️  Warning: Could not access subscription $_" -ForegroundColor Yellow
+            }
         }
     }
 }
@@ -758,8 +839,14 @@ foreach ($sub in $subscriptionList) {
     Write-Host "Checking subscription: $($sub.Name) ($($sub.Id))" -ForegroundColor White
     
     try {
-        # Set context to the subscription
-        Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
+        # Set context to the subscription (only if using Az.Accounts, not Azure CLI token)
+        if ([string]::IsNullOrEmpty($script:AzureCLIToken)) {
+            Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
+        }
+        else {
+            # Update the subscription ID for token-based calls
+            $script:AzureCLISubscriptionId = $sub.Id
+        }
         
         # Get quota limit
         $quotaLimit = Get-RoleAssignmentQuota -SubscriptionId $sub.Id
