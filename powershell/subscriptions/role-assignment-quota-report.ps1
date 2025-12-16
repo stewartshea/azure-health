@@ -37,6 +37,97 @@ function Test-ModuleInstalled {
     return (Get-Module -ListAvailable -Name $ModuleName) -ne $null
 }
 
+function Initialize-PowerShellEnvironment {
+    Write-Host "🔧 Initializing PowerShell environment..." -ForegroundColor Cyan
+    
+    # Check PowerShell version
+    $psVersion = $PSVersionTable.PSVersion
+    Write-Host "   PowerShell Version: $psVersion" -ForegroundColor Gray
+    
+    # Install NuGet provider if missing (required for module installation)
+    Write-Host "📦 Checking NuGet package provider..." -ForegroundColor Cyan
+    $nuget = Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue
+    
+    if (-not $nuget) {
+        Write-Host "   Installing NuGet package provider..." -ForegroundColor Yellow
+        try {
+            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser -ErrorAction Stop | Out-Null
+            Write-Host "   ✅ NuGet provider installed" -ForegroundColor Green
+        }
+        catch {
+            Write-Host "   ⚠️  Warning: Could not install NuGet provider: $_" -ForegroundColor Yellow
+            Write-Host "   Attempting to continue..." -ForegroundColor Yellow
+        }
+    }
+    else {
+        Write-Host "   ✅ NuGet provider is available" -ForegroundColor Green
+    }
+    
+    # Configure PowerShell Gallery as trusted repository
+    Write-Host "📦 Configuring PowerShell Gallery..." -ForegroundColor Cyan
+    $psGallery = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+    
+    if ($psGallery) {
+        if ($psGallery.InstallationPolicy -ne 'Trusted') {
+            Write-Host "   Setting PSGallery as trusted repository..." -ForegroundColor Yellow
+            try {
+                Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
+                Write-Host "   ✅ PSGallery configured as trusted" -ForegroundColor Green
+            }
+            catch {
+                Write-Host "   ⚠️  Warning: Could not set PSGallery as trusted: $_" -ForegroundColor Yellow
+                Write-Host "   You may be prompted to confirm during module installation" -ForegroundColor Yellow
+            }
+        }
+        else {
+            Write-Host "   ✅ PSGallery is already trusted" -ForegroundColor Green
+        }
+    }
+    else {
+        Write-Host "   ⚠️  Warning: PSGallery repository not found" -ForegroundColor Yellow
+        Write-Host "   Attempting to register PSGallery..." -ForegroundColor Yellow
+        try {
+            Register-PSRepository -Default -ErrorAction Stop
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
+            Write-Host "   ✅ PSGallery registered and configured" -ForegroundColor Green
+        }
+        catch {
+            Write-Host "   ⚠️  Warning: Could not register PSGallery: $_" -ForegroundColor Yellow
+        }
+    }
+    
+    # Check for PowerShellGet and update if needed
+    Write-Host "📦 Checking PowerShellGet..." -ForegroundColor Cyan
+    $psGet = Get-Module -ListAvailable -Name PowerShellGet | Sort-Object Version -Descending | Select-Object -First 1
+    
+    if ($psGet) {
+        Write-Host "   PowerShellGet version: $($psGet.Version)" -ForegroundColor Gray
+        if ($psGet.Version -lt [version]"2.0.0") {
+            Write-Host "   ⚠️  PowerShellGet is outdated. Attempting to update..." -ForegroundColor Yellow
+            try {
+                Install-Module -Name PowerShellGet -Force -AllowClobber -Scope CurrentUser -ErrorAction Stop
+                Write-Host "   ✅ PowerShellGet updated. Please restart the script." -ForegroundColor Green
+                Write-Host "   Note: A PowerShell restart may be required for changes to take effect." -ForegroundColor Yellow
+                exit 0
+            }
+            catch {
+                Write-Host "   ⚠️  Could not update PowerShellGet: $_" -ForegroundColor Yellow
+                Write-Host "   Continuing with current version..." -ForegroundColor Yellow
+            }
+        }
+        else {
+            Write-Host "   ✅ PowerShellGet is up to date" -ForegroundColor Green
+        }
+    }
+    else {
+        Write-Host "   ❌ PowerShellGet not found" -ForegroundColor Red
+        Write-Host "   Please install PowerShellGet: https://docs.microsoft.com/en-us/powershell/scripting/gallery/installing-psget" -ForegroundColor Yellow
+        exit 1
+    }
+    
+    Write-Host ""
+}
+
 function Install-RequiredModule {
     param(
         [string]$ModuleName,
@@ -46,15 +137,15 @@ function Install-RequiredModule {
     Write-Host "📦 Checking for module: $ModuleName..." -ForegroundColor Cyan
     
     if (Test-ModuleInstalled -ModuleName $ModuleName) {
-        Write-Host "✅ Module $ModuleName is already installed" -ForegroundColor Green
+        Write-Host "   ✅ Module $ModuleName is already installed" -ForegroundColor Green
         Import-Module $ModuleName -ErrorAction SilentlyContinue
         return
     }
     
-    Write-Host "⚠️  Module $ModuleName not found. Installing..." -ForegroundColor Yellow
+    Write-Host "   ⚠️  Module $ModuleName not found. Installing..." -ForegroundColor Yellow
     
     try {
-        # Check if running as administrator (Windows) or with appropriate permissions
+        # Determine installation scope
         if ($PSVersionTable.Platform -eq 'Win32NT' -or $null -eq $PSVersionTable.Platform) {
             $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
             $scope = if ($isAdmin) { "AllUsers" } else { "CurrentUser" }
@@ -70,6 +161,7 @@ function Install-RequiredModule {
             Scope = $scope
             Force = $true
             AllowClobber = $true
+            SkipPublisherCheck = $true
         }
         
         if ($MinimumVersion) {
@@ -78,37 +170,54 @@ function Install-RequiredModule {
         
         Install-Module @installParams -ErrorAction Stop
         Import-Module $ModuleName -ErrorAction Stop
-        Write-Host "✅ Successfully installed $ModuleName" -ForegroundColor Green
+        Write-Host "   ✅ Successfully installed $ModuleName" -ForegroundColor Green
     }
     catch {
-        Write-Host "❌ Failed to install $ModuleName : $_" -ForegroundColor Red
-        Write-Host "   You may need to run: Install-Module $ModuleName -Scope CurrentUser -Force" -ForegroundColor Yellow
+        Write-Host "   ❌ Failed to install $ModuleName" -ForegroundColor Red
+        Write-Host "   Error: $_" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "   Troubleshooting steps:" -ForegroundColor Yellow
+        Write-Host "   1. Try manually: Install-Module $ModuleName -Scope CurrentUser -Force" -ForegroundColor Yellow
+        Write-Host "   2. Check internet connectivity" -ForegroundColor Yellow
+        Write-Host "   3. Verify PSGallery access: Find-Module $ModuleName" -ForegroundColor Yellow
+        Write-Host "   4. Check PowerShell version: `$PSVersionTable" -ForegroundColor Yellow
         throw
     }
 }
 
-Write-Host "🔧 Checking and installing required modules..." -ForegroundColor Cyan
-Write-Host ""
-
-# Check for PowerShellGet (needed for module installation)
-if (-not (Test-ModuleInstalled -ModuleName "PowerShellGet")) {
-    Write-Host "⚠️  PowerShellGet not found. This is required for module installation." -ForegroundColor Yellow
-    Write-Host "   Please install PowerShellGet first: https://docs.microsoft.com/en-us/powershell/scripting/gallery/installing-psget" -ForegroundColor Yellow
-    exit 1
-}
+# Initialize PowerShell environment (NuGet, PSGallery, PowerShellGet)
+Initialize-PowerShellEnvironment
 
 # Install required Azure modules
+Write-Host "📦 Checking required Azure modules..." -ForegroundColor Cyan
+Write-Host ""
+
 $requiredModules = @(
     @{ Name = "Az.Accounts"; MinVersion = "2.0.0" }
     @{ Name = "Az.Resources"; MinVersion = "6.0.0" }
     @{ Name = "Az.ResourceGraph"; MinVersion = "0.13.0" }
 )
 
+$installSuccess = $true
 foreach ($module in $requiredModules) {
-    Install-RequiredModule -ModuleName $module.Name -MinimumVersion $module.MinVersion
+    try {
+        Install-RequiredModule -ModuleName $module.Name -MinimumVersion $module.MinVersion
+    }
+    catch {
+        $installSuccess = $false
+        Write-Host ""
+        Write-Host "❌ Failed to install required module: $($module.Name)" -ForegroundColor Red
+        Write-Host "   Cannot continue without required modules." -ForegroundColor Red
+        Write-Host ""
+        exit 1
+    }
 }
 
-Write-Host ""
+if ($installSuccess) {
+    Write-Host ""
+    Write-Host "✅ All required modules are installed and ready" -ForegroundColor Green
+    Write-Host ""
+}
 
 #endregion
 
