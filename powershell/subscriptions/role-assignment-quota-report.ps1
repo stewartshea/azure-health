@@ -44,8 +44,9 @@ if ([string]::IsNullOrEmpty($env:HOME)) {
     $env:HOME = $basePath
 }
 # Also set PowerShell $HOME variable (Az.Accounts uses this in its startup script)
+# $HOME is read-only, so we need to use Set-Variable with -Force
 if ([string]::IsNullOrEmpty($HOME)) {
-    $HOME = $basePath
+    Set-Variable -Name HOME -Value $basePath -Force -Option AllScope
 }
 
 # Set USERPROFILE (Windows equivalent, PowerShell may check this)
