@@ -30,6 +30,18 @@ param(
 # Set error action preference
 $ErrorActionPreference = "Stop"
 
+# Create temporary module directory
+$tempModulePath = Join-Path ([System.IO.Path]::GetTempPath()) "AzurePSModules_$PID"
+New-Item -ItemType Directory -Path $tempModulePath -Force | Out-Null
+
+# Add temp path to PSModulePath for this session
+$env:PSModulePath = "$tempModulePath$([IO.Path]::PathSeparator)$env:PSModulePath"
+
+# Set HOME if it's empty (this fixes the Install-Module path issue)
+if ([string]::IsNullOrEmpty($env:HOME)) {
+    $env:HOME = [System.IO.Path]::GetTempPath()
+}
+
 #region Module Management
 
 function Test-ModuleInstalled {
